@@ -5,7 +5,14 @@
 #   - <inputFile> is the path to the input file (input data for the executable)
 #   - <outputFile> is the path to the output file (where the results will be written)
 # measure result will be written to the console
-# output format: | <filePath>| <input> | <output> | <memoryUsage> | <elapsedTime> |
+# output format in JSON:
+# {
+#   "filePath": "<filePath>",
+#   "inputFile": "<inputFile>",
+#   "outputFile": "<outputFile>",
+#   "memoryUsed": <memoryUsed in MB>,
+#   "elapsedTime": <elapsedTime in seconds>
+# }
 
 param(
     [Parameter(Mandatory=$true)]
@@ -41,11 +48,17 @@ if (-not (Test-Path $inputFile)) {
     exit 1
 }
 
+if (-not (Test-Path (Split-Path $outputFile -Parent))) {
+    Write-Host "Error: Output directory does not exist - $(Split-Path $outputFile -Parent)"
+    Show-Usage
+    exit 1
+}
+
 #defs
-$msDelay = 10 # milliseconds
-$memBlock = 1MB
+$msDelay = 10 # milliseconds for process monitoring timeout
+$memBlock = 1MB # Memory block size for measurement in MB
 $digitsAfterDecimal = 2
-$format = "{0} | {1} | {2} | {3:N$digitsAfterDecimal} MB | {4:N$digitsAfterDecimal} seconds |"
+$timeoutSeconds = 300 # Maximum allowed execution time in seconds
 
 # Start measuring memory usage and time
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -60,16 +73,23 @@ if($null -eq $process) {
 }
 
 # monitor the process
-$memoryUsage = 0
+$memoryUsed = 0
 
 try {
     while(-not $process.HasExited) {
         Start-Sleep -Milliseconds $msDelay
+        if ($stopwatch.Elapsed.TotalSeconds -gt $timeoutSeconds) {
+            Write-Host "Error: Process timeout exceeded ($timeoutSeconds seconds). Killing process."
+            $process.Kill()
+            $process.WaitForExit()
+            Write-Host "Process killed due to timeout."
+            break
+        }
         try {
             $currentProcess = Get-Process -Id $process.Id -ErrorAction Stop
             $memory = $currentProcess.WorkingSet64 / $memBlock # Convert bytes to MB
-            if ($memory -gt $memoryUsage) {
-                $memoryUsage = $memory
+            if ($memory -gt $memoryUsed) {
+                $memoryUsed = $memory
             }
         } catch {
             # Process may have exited, ignore error
@@ -84,5 +104,12 @@ $stopwatch.Stop()
 
 # Output the formatted result
 $elapsedTime = $stopwatch.Elapsed.TotalSeconds
-$result = $format -f $filePath, $inputFile, $outputFile, $memoryUsage, $elapsedTime
-Write-Host $result
+$result = @{
+    filePath = $filePath
+    inputFile = $inputFile
+    outputFile = $outputFile
+    memoryUsed = [math]::Round($memoryUsed, $digitsAfterDecimal)
+    elapsedTime = [math]::Round($elapsedTime, $digitsAfterDecimal)
+}
+
+Write-Output ($result | ConvertTo-Json -Depth 3)

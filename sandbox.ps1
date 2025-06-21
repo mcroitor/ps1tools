@@ -11,7 +11,7 @@
 #   "filePath": "<filePath>",
 #   "inputFile": "<inputFile>",
 #   "outputFile": "<outputFile>",
-#   "memoryUsage": <memoryUsage in MB>,
+#   "memoryUsed": <memoryUsed in MB>,
 #   "elapsedTime": <elapsedTime in seconds>,
 #   "status": "<status of execution>"
 # }
@@ -66,13 +66,19 @@ if (-not (Test-Path $inputFile)) {
     exit 1
 }
 
+if (-not (Test-Path (Split-Path $outputFile -Parent))) {
+    Write-Host "Error: Output directory does not exist - $(Split-Path $outputFile -Parent)"
+    Show-Usage
+    exit 1
+}
+
 #defs
 $msDelay = 10 # milliseconds
 $memBlock = 1MB
 $digitsAfterDecimal = 3
 
 $status = "Success"
-$usedMemory = 0
+$memoryUsed = 0
 $elapsedTime = 0
 
 # Start measuring memory usage and time
@@ -90,8 +96,8 @@ if($null -eq $process) {
         filePath = $filePath
         inputFile = $inputFile
         outputFile = $outputFile
-        memoryUsage = 0
-        elapsedTime = 0
+        memoryUsed = $memoryUsed
+        elapsedTime = $elapsedTime
         status = "ProcessNotStarted"
     }
     Write-Output ($result | ConvertTo-Json)
@@ -105,21 +111,21 @@ try {
         try {
             $currentProcess = Get-Process -Id $process.Id -ErrorAction Stop
             $memory = $currentProcess.WorkingSet64 / $memBlock
-            if ($memory -gt $usedMemory) {
-                $usedMemory = $memory
+            if ($memory -gt $memoryUsed) {
+                $memoryUsed = $memory
             }
         } catch {
             break # Process exited, break the loop
         }
 
-        if ($usedMemory -gt $memoryLimitMB) {
+        if ($memoryUsed -gt $memoryLimitMB) {
             $status = "MemoryLimitExceeded"
-            $process.Kill()
+            try { $process.Kill() } catch {}
             break
         }
         if ($stopwatch.Elapsed.TotalMilliseconds -ge $timeLimitMS) {
             $status = "TimeLimitExceeded"
-            $process.Kill()
+            try { $process.Kill() } catch {}
             break
         }
     }
@@ -131,18 +137,23 @@ try {
 $stopwatch.Stop()
 $elapsedTime = $stopwatch.Elapsed.TotalSeconds
 
-# Optionally add exit code
+$process.WaitForExit()
+
 $exitCode = $null
 try { $exitCode = $process.ExitCode } catch {}
+
+if ($status -eq "Success" -and $exitCode -ne 0) {
+    $status = "ProcessFailed"
+}
 
 $result = @{
     filePath = $filePath
     inputFile = $inputFile
     outputFile = $outputFile
-    memoryUsage = [math]::Round($usedMemory, $digitsAfterDecimal).ToString() + " MB"
-    elapsedTime = [math]::Round($elapsedTime, $digitsAfterDecimal).ToString() + " seconds"
-    status = $status
+    memoryUsed = [math]::Round($memoryUsed, $digitsAfterDecimal)
+    elapsedTime = [math]::Round($elapsedTime, $digitsAfterDecimal)
     exitCode = $exitCode
+    status = $status
 }
 
 Write-Output ($result | ConvertTo-Json -Depth 3)
